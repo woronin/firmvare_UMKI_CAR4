@@ -1,0 +1,338 @@
+Project : Программируемые пазлы УМКИ CAR4 Следопыт
+Version : 
+Date    : 10.01.2017
+Author  : Козлов Сергей   , Игорь Воронин      woronin05@yandex.ru
+Comments: 
+
+
+Chip type           : ATmega8L
+Program type        : Application
+Clock frequency     : 1,843200 MHz
+Memory model        : Small
+External SRAM size  : 0
+Data Stack size     : 256
+*****************************************************/
+
+#include <mega8.h>
+#include <m8_128.h> 
+#include <stdio.h>
+#include <delay.h>
+
+#define ADC_VREF_TYPE 0xC0
+
+//#define 	I2C_READ   1
+//#define 	I2C_WRITE   0
+//#define 	i2c_read(ack)   (ack) ? i2c_readAck() : i2c_readNak();
+
+//#define  u8 unsigned char    // 0 to 255
+//#define  s8   signed char    // -128 to 127
+
+//#define  u16 unsigned int    //  0 to 65535
+//#define  s16   signed int	   //	-32768 to 32767
+
+//#define  u32 unsigned long int	//	0 to 4294967295
+//#define  s32   signed long int	// -2147483648 to 2147483647
+
+//#define  f32 float	//	±1.175e-38 to ±3.402e38
+//#define  d32 double	//	±1.175e-38 to ±3.402e38
+#define N 16 //количество чисел для усреднения значений АЦП
+#define rdy 0 //бит готовности записи АЦП
+#define T_ust 600//время ожидания команды *0.5сек
+#define RX_BUFFER_SIZE0 45
+char rx_buffer0[RX_BUFFER_SIZE0];
+
+#if RX_BUFFER_SIZE0<256
+unsigned char rx_wr_index0,rx_rd_index0,rx_counter0;
+#else
+unsigned int rx_wr_index0,rx_rd_index0,rx_counter0;
+#endif
+// s16 LeftB = 0;// Количество импульсов задатчика иотора 1
+// s16 RightB =0;//Количество импульсов задатчика иотора 1
+// s16 Left = 0;// Количество импульсов 
+// s16 Right =0;//Количество импульсов 
+u8 Npuls=0;//номер импульса синхронизации
+//u16 adc_data;//,adc_0n,adc_1n;
+//u16 adc_0n,adc_1n,adc_2n,adc_3n;
+u8 n=4;//частота мигания индикатора
+u8 Flg;//флаг наличия импульсов
+u8 CR_CON,i,k1,Cic,c,m,Tlamp;
+u8 k=1;
+u8 j=1;//
+u8 Puls=0x55;
+u16 T_on,T,T_REAL,x,Tref;
+u8 Course,Time,IN,T1L,T1H;//
+u16 t1=500;//Задание интервалов времени движения 
+u16 t2=1000;
+u16 t3=1500;
+u16 t4=2000;
+char Napr[25];//
+char Set[25];//={0x10,0x12,0x09,0x06,0x05,0x04,0x03,0x02,0x05,0x0F,0x1F,0x0E,0x05,0x03,0x10,0x12,0x09,0x06,0x05,0x04,0x03,0x02,0x05,0x0F,0x1F};//
+char Dt[25];//
+char A[25];//Определение массива с данными
+char D[25];//Определение массива с данными
+u8 TrefL,TrefH;//Текущее значение времени синхронизации
+char MASSIV[14]={0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0xFE,0x00,0x00};
+
+
+
+void Send(void)//Отправка сообщений
+{
+//  while(!(UCSRA & (1<<UDRE))); UDR = 0x7E;
+//  while(!(UCSRA & (1<<UDRE))); UDR = 0x00;
+//  while(!(UCSRA & (1<<UDRE))); UDR = 16+k;//0x11;16;//
+//  for (i=0;i<14;i++){//Отправка обратного сообщения
+// while(!(UCSRA & (1<<UDRE))); UDR = MASSIV[i];
+//         };
+ CR_CON=0x00;// Вычисление контрольной суммы 
+                  for (i=1;i<=k;i++){//Отправка обратного сообщения
+                while(!(UCSRA & (1<<UDRE))); UDR = A[i];
+                CR_CON +=A[i];// Вычисление контрольной суммы
+                        };
+while(!(UCSRA & (1<<UDRE))); UDR = TrefH;//k1;//Course;//k Npuls Napr[j];//
+CR_CON +=TrefH;//k1;//Course;//Napr[j];// 
+while(!(UCSRA & (1<<UDRE))); UDR = TrefL;//k1;//Course;//k Npuls Napr[j];//
+CR_CON +=TrefL;//k1;//Course;//Napr[j];//
+while(!(UCSRA & (1<<UDRE))); UDR = k;//Time;//k Set[j];//
+CR_CON +=k;//Time;//Set[j];//
+// while(!(UCSRA & (1<<UDRE))); UDR = k1;
+// CR_CON +=k1;
+ CR_CON=0xFF-CR_CON;//Вычисление контрольной суммы
+ while(!(UCSRA & (1<<UDRE))); UDR = CR_CON;
+ return;
+  }
+ void StopALARM(void)//Подпрограмма аварийной остановки 
+ {
+ PORTC&=(~0x0F);//Остановить двигатели
+ PORTD.5=0;//Выключить питание двигателей 
+ PORTD.4=1;//индикация вкл.
+ PORTD.3=1; //ВКЛЮЧИТЬ ЗВУК
+ delay_ms(750);
+ PORTD.4=0;//индикация выкл.
+ PORTD.3=0;//ВЫКЛЮЧИТЬ ЗВУК 
+return;
+  }             
+void Stop(void)//Подпрограмма остановки
+{
+   PORTC&=(~0x0F);//Остановить двигатели
+    TIMSK&=(~(1<<TOIE2));//запретить прерывание по таймеру
+    ACSR&=(~(1<<ACIE));//Запрет прерывания по компаратору
+    TIMSK&=(~(1<<OCIE1A));//запретить прерывание по таймеру при совпадении значений 
+    PORTD.5=0;//Выключить питание двигателей
+    PORTB.2=0;//Выключить питание фотодатчиков
+    PORTB.1=1;//выключить индикацию
+    TCCR1B=0;//СТОП таймер 1
+    OCR1AH=0;// старший байт таймера для сравнения
+    OCR1AL=0;//очистить младший байт таймера для сравнения
+    k1=0;//Обнуление флага цикла записи.
+    Npuls=0;//обнуление счетчика импульсов
+    Cic=0;
+    TCCR0=0x00;// Стоп таймер 0
+    TIMSK&=(~(1<<TOIE0));//запретить прерывание по таймеру 0 
+        for (i=1;i<k;i++) {
+        delay_ms(500);
+        PORTB.1=0;
+        //PORTD.3=1;
+        delay_ms(500);
+        PORTB.1=1;
+        //PORTD.3=0; 
+        };
+     delay_ms(2000);
+                
+    
+return;
+  }
+ void Start(void)//Подпрограмма 
+{ 
+                Cic=0;//
+               TCNT0=0x1E;//Старт таймера 0
+               TCCR0=0x05;//
+               TIMSK|=(1<<TOIE0);//разрешить прерывание по таймеру
+                   for (;;) {
+                        if (Set[j]==Cic) {
+                        goto mesto7;//
+                        };
+                   };     
+               //while (Set[j]==Cic);//Ожидание
+               //while (!(Set[j]==Cic));//Ожидание
+    mesto7://
+                TCCR0=0x00;// Стоп таймер 0
+                Cic=0;//
+                TCNT0=0xFF-Dt[j];//Старт таймера 0
+                TCCR0=0x05;//
+                while (Cic);//Ожидание
+                
+               PORTC&=(~0x0F);//Остановить двигатели
+                TCCR0=0x00;// Стоп таймер 0
+               TIMSK&=(~(1<<TOIE0));//запретить прерывание по таймеру 0
+               delay_ms(250);
+ return;
+  }              
+                 
+ // Timer 0 overflow interrupt service routine
+ interrupt [TIM0_OVF] void timer0_ovf_isr(void)
+{
+// Reinitialize Timer 0 value
+TCNT0=0x1E;
+Cic++;//
+
+
+// Place your code here
+switch (k1) {
+                        case 0:
+                        Tlamp++;//
+                        if (Tlamp==2){    
+                                PORTB.1= ~PORTB.1;
+                                Tlamp=0; 
+                                };//
+                        break;
+//                         case 1:
+//                         if (Cic>10){
+//                         PORTC&=(~0x0F);//Остановить двигатели
+//                          PORTD.5=0;//Выключить питание двигателей 
+//                          PORTD.4=1;//индикация вкл.
+//                          PORTD.3=1; //ВКЛЮЧИТЬ ЗВУК
+//                          delay_ms(750);
+//                          PORTD.4=0;//индикация выкл.
+//                          PORTD.3=0;//ВЫКЛЮЧИТЬ ЗВУК 
+//                             //    StopALARM()
+//                                 };//
+//                         break;
+                        };
+}
+   
+// External Interrupt 0 service routine
+interrupt [TIM2_OVF] void timer2_ovf_isr(void)
+{
+// Reinitialize Timer 2 value
+//Cic++;//
+if (PORTB.2==1){//
+PORTD.5=1;// ~PORTD.5;
+  };
+TCNT2=0x1E;//Загрузка прежнего значения таймера 2
+    // if (Cic>=n) {
+    // //PORTB.1= ~PORTB.1;
+    // Cic=0;
+    // if (T_on!=0) {
+    // //T_on--;
+    //    };
+    // //Flg++;//инкримент флага импульсов
+    
+    //};
+
+}
+// Timer 1 overflow interrupt service routine
+interrupt [TIM1_OVF] void timer1_ovf_isr(void)
+{
+// Place your code here
+        // PORTC&=(~0x0F);//Остановить двигатели 
+        // PORTD.5=0;//Выключить питание двигателей
+        // PORTB.2=1;//Выключить питание фотодатчиков
+        // TCCR1B=0;//СТОП таймер 1
+        // n=2;//увеличиваем частоту мигания индикатора в два раза
+        // Send();//Отправка сообщения с данными программы движения
+        
+
+}
+// Timer 1 output compare A interrupt service routine
+interrupt [TIM1_COMPA] void timer1_compa_isr(void)
+{
+// Place your code here
+TCNT1H=0x00;//обнуление таймера 1
+TCNT1L=0x00;
+Npuls++;//
+//b++;
+PORTB.1= ~PORTB.1;
+if (Npuls<7) {
+ IN=1;//
+
+
+A[k]=(A[k]<<1);//(~ACSR.5);//запись данных программы
+  };
+if (Npuls==14) {
+    TCNT0=0x1E;//Старт таймера 0 0.125 сек.
+    TCCR0=0x05;//
+    TIMSK|=(1<<TOIE0);//разрешить прерывание по таймеру 0
+TCCR1B=0;//СТОП таймер 1
+TIMSK&=(~(1<<OCIE1A));//запретить прерывание по таймеру при совпадении значений
+OCR1AH=0;// старший байт таймера для сравнения
+OCR1AL=0;//очистить младший байт таймера для сравнения
+    if (A[k]>0x0F){
+    PORTD.4=1;//индикация вкл.
+    PORTD.5=0;//Выключить питание двигателей
+    PORTB.2=0;//Выключить питание фотодатчиков
+    PORTB.1=1;//выключить индикацию
+    };
+k++;//увеличение номера исполнительной команды
+//b=0;
+Npuls=0;//обнуление счетчика импульсов 
+ 
+    
+ };
+
+}
+// Analog Comparator interrupt service routine
+interrupt [ANA_COMP] void ana_comp_isr(void)
+{
+// Place your code here
+//PORTB.1= ~PORTB.1;
+PORTD.5=0;//Выключить питание двигателей
+}
+
+
+interrupt [EXT_INT0] void ext_int0_isr(void)
+{
+// Place your code here
+T_on=T_ust;
+
+///while (!PIND.2); //Ожидание установки высокого уровня на INT0
+GIFR=0x40;//Сброс флага прерывания INT0
+ 
+}
+
+#define FRAMING_ERROR (1<<FE)
+#define PARITY_ERROR (1<<UPE)
+#define DATA_OVERRUN (1<<OVR)
+#define DATA_REGISTER_EMPTY (1<<UDRE)
+#define RX_COMPLETE (1<<RXC)
+
+// USART Receiver buffer
+
+
+// This flag is set on USART Receiver buffer overflow
+bit rx_buffer_overflow0;
+
+// USART Receiver interrupt service routine
+interrupt [USART_RXC] void usart_rx_isr(void)
+{
+char status,data;
+status=UCSRA;
+data=UDR;
+if ((status & (FRAMING_ERROR | PARITY_ERROR | DATA_OVERRUN))==0)
+   {
+   rx_buffer0[rx_wr_index0]=data;
+   if (++rx_wr_index0 == RX_BUFFER_SIZE0) rx_wr_index0=0;
+   if (++rx_counter0 == RX_BUFFER_SIZE0)
+      {
+      rx_counter0=0;
+      rx_buffer_overflow0=1;
+      };
+   };
+}
+#ifndef _DEBUG_TERMINAL_IO_
+// Get a character from the USART Receiver buffer
+#define _ALTERNATE_GETCHAR_
+#pragma used+
+char getchar(void)
+{
+char data;
+while (rx_counter0==0);
+data=rx_buffer0[rx_rd_index0];
+if (++rx_rd_index0 == RX_BUFFER_SIZE0) rx_rd_index0=0;
+#asm("cli")
+--rx_counter0;
+#asm("sei")
+return data;
+}
+#pragma used-
+#endif
+
